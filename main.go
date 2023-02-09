@@ -7,9 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-    "utf8"
-
-	"github.com/badgerodon/collections"
 )
 
 func main() {
@@ -27,13 +24,13 @@ func listenHttp(host string, port int) error {
 	}
 
 	defer l.Close()
-	fmt.Println("Listening on " + hostport)
+	fmt.Printf("Listening on %s\n", hostport)
 
 	for {
 		conn, err := l.Accept()
 
 		if err != nil {
-			fmt.Println("Error: " + err.Error())
+			fmt.Printf("Error: %s\n", err.Error())
 			continue
 		}
 
@@ -41,80 +38,88 @@ func listenHttp(host string, port int) error {
 	}
 }
 
-const REQUEST_TOTAL_TIMEOUT = 123
-const REQUEST_TRANSFER_TIMEOUT = 123
+const REQUEST_TOTAL_TIMEOUT = 10000
+const REQUEST_TRANSFER_TIMEOUT = 1000
 
 // TODO: set write deadline to counteract slow-loris attack.
 // I think it can be done by simply setting the deadline
 // as the remaining timeout time
 func handleConnection(conn net.Conn) {
-    TERMINATOR_CONSTANT := [4]byte{ 13, 10, 13, 10 };
-	fmt.Println("[%s] Request recieved", conn.RemoteAddr().String())
+	fmt.Printf("[%s] Request received\n", conn.RemoteAddr().String())
 
-    defer conn.Close()
-    defer fmt.Println("[%s] Client disconnected", conn.RemoteAddr().String())
+	defer conn.Close()
+	defer fmt.Printf("[%s] Client disconnected\n", conn.RemoteAddr().String())
 
 	initiatedTime := time.Now()
 
 	for {
 		dataTransferStartTime := time.Now()
-		requestData := collections.NewQueue[byte]()
-
-		endCharsIndex := 0
+		requestString := ""
 
 		requestFinished := false
 		for !requestFinished {
-            if time.Since(initiatedTime).Seconds() > REQUEST_TOTAL_TIMEOUT || time.Since(dataTransferStartTime) > REQUEST_TRANSFER_TIMEOUT
-            {
-                fmt.Println("[%s] Client timed out", conn.RemoteAddr().String())
-                return
-            }
+			if (time.Since(initiatedTime).Milliseconds() > REQUEST_TOTAL_TIMEOUT) || (time.Since(dataTransferStartTime).Milliseconds() > REQUEST_TRANSFER_TIMEOUT) {
+				fmt.Printf("[%s] Client timed out\n", conn.RemoteAddr().String())
+				return
+			}
 
-            dataTransferStartTime = time.Now()
+			dataTransferStartTime = time.Now()
 
-            newByte := make([]byte, 1)
-            _, err := conn.Read(newByte)
+			dataBuffer := make([]byte, 512)
+			conn.SetDeadline(initiatedTime.Add(time.Millisecond * time.Duration(REQUEST_TOTAL_TIMEOUT)))
+			i, err := conn.Read(dataBuffer)
 
-            requestData.Push(newByte[0])
+			if err != nil {
+				fmt.Printf("[%s] Error occured: %s\n", conn.RemoteAddr().String(), err.Error())
+				//return
+			}
 
-            if newByte == TERMINATOR_CONSTANT[endCharsIndex] {
-                endCharsIndex++
-            }else{
-                endCharsIndex = 0
-            }
+			requestString += string(dataBuffer[:i])
 
-            if endCharsIndex == 4 {
-                break
-            }
+			fmt.Printf("Read %d bytes \n", i)
+
+			// More data to read?
+			if i == len(dataBuffer) {
+				continue
+			}
+
+			// Check for terminator
+			TERMINATOR_CONSTANT := [4]byte{13, 10, 13, 10}
+
+			correct := true
+			for offset := 0; offset < 4; offset++ {
+				if TERMINATOR_CONSTANT[offset] != dataBuffer[i-4+offset] {
+					correct = false
+					break
+
+				}
+			}
+
+			if correct {
+				break
+			}
 		}
 
-        requestDataBytes := make(byte[requestData.Size()])
-        for i := 0; i < requestData.Size(); i++ {
-            requestDataBytes[i] = requestData[i]
-        }
+		// Generate request
+		req := NewRequest(requestString, conn.RemoteAddr())
+		if req.contentLength > 0 {
+			req.body = make([]byte, req.contentLength)
+			conn.Read(req.body)
+		}
 
-        requestString := string(requestData[:])
+		res, err := handleRequest(req)
 
-        // Generate request
-        req := NewRequest(requestString, conn.RemoteAddr())
-        if req.contentLength > 0 {
-            req.body = make([]byte, req.contentLength)
-            conn.Read(req.body, req.contentLength)
-        }
+		if err != nil {
+			fmt.Printf("[%s] Couldn't handle request: %s\n", conn.RemoteAddr().String(), err.Error())
+			return
+		}
 
-        res, err := handleRequest(req)
+		conn.Write([]byte(res.String()))
 
-        if err != nil {
-            fmt.Println("[%s] Couldn't handle request: %s", conn.RemoteAddr().String(), err.Error())
-            return
-        }
-
-        conn.Write([]byte(res.String()))
-
-        if req.connectionStatus == "close" {
-            return
-        }
-    }
+		if req.connectionStatus == "close" {
+			return
+		}
+	}
 }
 
 // TODO: should receive the network connection instead of a parsed request,
@@ -153,10 +158,12 @@ type Request struct {
 }
 
 func NewRequest(raw string, origin net.Addr) Request {
-    req := new(Request)
-    req.connectionStatus = "close" // closes by default
-    req.originator = origin
-    ParseRequestHeader(raw)
+	req := new(Request)
+	req.connectionStatus = "close" // closes by default
+	req.originator = origin
+	ParseRequestHeader(raw)
+
+	return *req
 }
 
 func ParseRequestHeader(rawHeader string) (Request, error) {
