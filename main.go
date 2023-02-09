@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -8,6 +9,26 @@ import (
 
 func main() {
 	fmt.Println("Hello, world")
+}
+
+// TODO: should receive the network connection instead of a parsed request,
+// this is because the main blocking action would be the parsing and retrieving.
+func handleRequest(req Request) (Response, error) {
+	res := new(Response)
+
+	switch req.method {
+	case "get":
+		res.statusCode = 420
+		res.statusResponse = "Enhance your calm"
+		res.date = time.Now()
+		res.connectionStatus = req.connectionStatus
+		res.contentType = "text/html"
+		res.content = "<span>Hello, world</span>"
+
+		return *res, nil
+	}
+
+	return *res, errors.New("Server cannot handle the desired request method")
 }
 
 type Request struct {
