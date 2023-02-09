@@ -101,12 +101,18 @@ func handleConnection(conn net.Conn) {
 		}
 
 		// Generate request
-		req := NewRequest(requestString, conn.RemoteAddr())
+		req, err := NewRequest(requestString, conn.RemoteAddr())
+
+		if err != nil {
+			fmt.Printf("[%s] Couldn't parse request: %s\n", conn.RemoteAddr().String(), err.Error())
+		}
+
 		if req.contentLength > 0 {
 			req.body = make([]byte, req.contentLength)
 			conn.Read(req.body)
 		}
 
+		// BREAKPOINT
 		res, err := handleRequest(req)
 
 		if err != nil {
@@ -129,12 +135,13 @@ func handleRequest(req Request) (Response, error) {
 
 	switch req.method {
 	case "get":
-		res.statusCode = 420
-		res.statusResponse = "Enhance your calm"
+		res.statusCode = 418
+		res.statusResponse = "I'm a teapot"
 		res.date = time.Now()
 		res.connectionStatus = req.connectionStatus
 		res.contentType = "text/html"
 		res.content = "<span>Denne hjemmeside kører på hjemmelavet serversoftware</span>"
+		res.contentLength = len(res.content)
 
 		return *res, nil
 	}
@@ -157,25 +164,25 @@ type Request struct {
 	originator net.Addr
 }
 
-func NewRequest(raw string, origin net.Addr) Request {
-	req := new(Request)
+func NewRequest(raw string, origin net.Addr) (Request, error) {
+	req, err := ParseRequestHeader(raw)
+
 	req.connectionStatus = "close" // closes by default
 	req.originator = origin
-	ParseRequestHeader(raw)
 
-	return *req
+	return req, err
 }
 
 func ParseRequestHeader(rawHeader string) (Request, error) {
-	res := new(Request)
+	req := new(Request)
 	lines := strings.Split(rawHeader, "\r\n")
 
 	for i := 0; i < len(lines); i++ {
 		if strings.HasSuffix(strings.ToLower(lines[i]), "http/1.1") {
 			words := strings.Split(lines[i], " ")
 
-			res.method = strings.ToLower(words[0])
-			res.requestUri = words[1]
+			req.method = strings.ToLower(words[0])
+			req.requestUri = words[1]
 			continue
 		}
 
@@ -183,21 +190,21 @@ func ParseRequestHeader(rawHeader string) (Request, error) {
 
 		switch strings.ToLower(keyValuePair[0]) {
 		case "user-agent":
-			res.userAgent = keyValuePair[1]
+			req.userAgent = keyValuePair[1]
 		case "host":
-			res.host = keyValuePair[1]
+			req.host = keyValuePair[1]
 		case "content-length":
 			i, err := strconv.Atoi(strings.TrimSpace(keyValuePair[i]))
 
 			if err != nil {
-				return *res, errors.New("invalid request header, 'Content-Length' value not integer")
+				return *req, errors.New("invalid request header, 'Content-Length' value not integer")
 			}
 
-			res.contentLength = i
+			req.contentLength = i
 		}
 	}
 
-	return *res, nil
+	return *req, nil
 }
 
 type Response struct {
