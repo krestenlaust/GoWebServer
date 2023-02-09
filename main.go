@@ -7,10 +7,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+    "utf8"
+
+	"github.com/badgerodon/collections"
 )
 
 func main() {
 	fmt.Println("Hello, world")
+
+	listenHttp("127.0.0.1", 8080)
 }
 
 func listenHttp(host string, port int) error {
@@ -36,8 +41,80 @@ func listenHttp(host string, port int) error {
 	}
 }
 
-func handleConnection(conn net.Conn) {
+const REQUEST_TOTAL_TIMEOUT = 123
+const REQUEST_TRANSFER_TIMEOUT = 123
 
+// TODO: set write deadline to counteract slow-loris attack.
+// I think it can be done by simply setting the deadline
+// as the remaining timeout time
+func handleConnection(conn net.Conn) {
+    TERMINATOR_CONSTANT := [4]byte{ 13, 10, 13, 10 };
+	fmt.Println("[%s] Request recieved", conn.RemoteAddr().String())
+
+    defer conn.Close()
+    defer fmt.Println("[%s] Client disconnected", conn.RemoteAddr().String())
+
+	initiatedTime := time.Now()
+
+	for {
+		dataTransferStartTime := time.Now()
+		requestData := collections.NewQueue[byte]()
+
+		endCharsIndex := 0
+
+		requestFinished := false
+		for !requestFinished {
+            if time.Since(initiatedTime).Seconds() > REQUEST_TOTAL_TIMEOUT || time.Since(dataTransferStartTime) > REQUEST_TRANSFER_TIMEOUT
+            {
+                fmt.Println("[%s] Client timed out", conn.RemoteAddr().String())
+                return
+            }
+
+            dataTransferStartTime = time.Now()
+
+            newByte := make([]byte, 1)
+            _, err := conn.Read(newByte)
+
+            requestData.Push(newByte[0])
+
+            if newByte == TERMINATOR_CONSTANT[endCharsIndex] {
+                endCharsIndex++
+            }else{
+                endCharsIndex = 0
+            }
+
+            if endCharsIndex == 4 {
+                break
+            }
+		}
+
+        requestDataBytes := make(byte[requestData.Size()])
+        for i := 0; i < requestData.Size(); i++ {
+            requestDataBytes[i] = requestData[i]
+        }
+
+        requestString := string(requestData[:])
+
+        // Generate request
+        req := NewRequest(requestString, conn.RemoteAddr())
+        if req.contentLength > 0 {
+            req.body = make([]byte, req.contentLength)
+            conn.Read(req.body, req.contentLength)
+        }
+
+        res, err := handleRequest(req)
+
+        if err != nil {
+            fmt.Println("[%s] Couldn't handle request: %s", conn.RemoteAddr().String(), err.Error())
+            return
+        }
+
+        conn.Write([]byte(res.String()))
+
+        if req.connectionStatus == "close" {
+            return
+        }
+    }
 }
 
 // TODO: should receive the network connection instead of a parsed request,
@@ -52,12 +129,12 @@ func handleRequest(req Request) (Response, error) {
 		res.date = time.Now()
 		res.connectionStatus = req.connectionStatus
 		res.contentType = "text/html"
-		res.content = "<span>Hello, world</span>"
+		res.content = "<span>Denne hjemmeside kører på hjemmelavet serversoftware</span>"
 
 		return *res, nil
 	}
 
-	return *res, errors.New("Server cannot handle the desired request method")
+	return *res, errors.New("server cannot handle the desired request method")
 }
 
 type Request struct {
@@ -72,7 +149,14 @@ type Request struct {
 	requestUri string
 	userAgent  string
 	host       string
-	originator net.IP
+	originator net.Addr
+}
+
+func NewRequest(raw string, origin net.Addr) Request {
+    req := new(Request)
+    req.connectionStatus = "close" // closes by default
+    req.originator = origin
+    ParseRequestHeader(raw)
 }
 
 func ParseRequestHeader(rawHeader string) (Request, error) {
@@ -99,7 +183,7 @@ func ParseRequestHeader(rawHeader string) (Request, error) {
 			i, err := strconv.Atoi(strings.TrimSpace(keyValuePair[i]))
 
 			if err != nil {
-				return *res, errors.New("Invalid request header, 'Content-Length' value not integral")
+				return *res, errors.New("invalid request header, 'Content-Length' value not integer")
 			}
 
 			res.contentLength = i
