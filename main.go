@@ -12,7 +12,7 @@ import (
 func main() {
 	fmt.Println("Hello, world")
 
-	listenHttp("127.0.0.1", 8080)
+	listenHttp("0.0.0.0", 80)
 }
 
 func listenHttp(host string, port int) error {
@@ -41,23 +41,21 @@ func listenHttp(host string, port int) error {
 const REQUEST_TOTAL_TIMEOUT = 10000
 const REQUEST_TRANSFER_TIMEOUT = 1000
 
-// TODO: set write deadline to counteract slow-loris attack.
-// I think it can be done by simply setting the deadline
-// as the remaining timeout time
 func handleConnection(conn net.Conn) {
-	fmt.Printf("[%s] Request received\n", conn.RemoteAddr().String())
-
 	defer conn.Close()
 	defer fmt.Printf("[%s] Client disconnected\n", conn.RemoteAddr().String())
 
+	fmt.Printf("[%s] Request received\n", conn.RemoteAddr().String())
+
 	initiatedTime := time.Now()
 
+	// Handle requests from client until closed
 	for {
 		dataTransferStartTime := time.Now()
 		requestString := ""
 
-		requestFinished := false
-		for !requestFinished {
+		// Receive request
+		for {
 			if (time.Since(initiatedTime).Milliseconds() > REQUEST_TOTAL_TIMEOUT) || (time.Since(dataTransferStartTime).Milliseconds() > REQUEST_TRANSFER_TIMEOUT) {
 				fmt.Printf("[%s] Client timed out\n", conn.RemoteAddr().String())
 				return
@@ -66,6 +64,8 @@ func handleConnection(conn net.Conn) {
 			dataTransferStartTime = time.Now()
 
 			dataBuffer := make([]byte, 256)
+
+			// set deadline as the timeout duration, to prevent client stalling
 			conn.SetDeadline(initiatedTime.Add(time.Millisecond * time.Duration(REQUEST_TOTAL_TIMEOUT)))
 			i, err := conn.Read(dataBuffer)
 
@@ -86,26 +86,8 @@ func handleConnection(conn net.Conn) {
 			if strings.HasSuffix(requestString, "\r\n\r\n") {
 				break
 			}
-
-			/*
-				// Check for terminator
-				TERMINATOR_CONSTANT := [4]byte{13, 10, 13, 10}
-
-				correct := true
-				for offset := 0; offset < 4; offset++ {
-					if TERMINATOR_CONSTANT[offset] != dataBuffer[i-4+offset] {
-						correct = false
-						break
-
-					}
-				}
-
-				if correct {
-					break
-				}*/
 		}
 
-		// Generate request
 		req, err := NewRequest(requestString, conn.RemoteAddr())
 
 		if err != nil {
@@ -117,7 +99,6 @@ func handleConnection(conn net.Conn) {
 			conn.Read(req.body)
 		}
 
-		// BREAKPOINT
 		res, err := handleRequest(req)
 
 		if err != nil {
@@ -128,7 +109,7 @@ func handleConnection(conn net.Conn) {
 		conn.Write([]byte(res.String()))
 
 		if req.connectionStatus == "close" {
-			return
+			break
 		}
 	}
 }
@@ -157,57 +138,97 @@ type Request struct {
 	contentLength    int
 	body             []byte
 	connectionStatus string // 'close', 'keep-alive' etc.
-	date             time.Time
 
 	// Request header
-	method     string
-	requestUri string
-	userAgent  string
-	host       string
-	originator net.Addr
+	httpVersionMajor int
+	httpVersionMinor int
+	requestUri       string
+	originator       net.Addr
+	method           string
+	fields           map[string]string
 }
 
 func NewRequest(raw string, origin net.Addr) (Request, error) {
-	req, err := ParseRequestHeader(raw)
+	req := new(Request)
+	req.fields = make(map[string]string)
+	err := req.ParseHeader(raw)
 
 	req.connectionStatus = "close" // closes by default
 	req.originator = origin
 
-	return req, err
+	return *req, err
 }
 
-func ParseRequestHeader(rawHeader string) (Request, error) {
-	req := new(Request)
+// Parses version string, e.g. "http/1.1", "HTTP/2" or similar
+func parseHttpVersion(versionString string) (major int, minor int, err error) {
+	parts := strings.Split(strings.ToLower(versionString), "/")
+
+	if len(parts) != 2 || parts[0] != "http" {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	majorMinor := strings.Split(parts[1], ".")
+
+	majorValue, err := strconv.Atoi(majorMinor[0])
+
+	if err != nil {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	// Only major
+	if len(majorMinor) == 1 {
+		return majorValue, 0, nil
+	}
+
+	minorValue, err := strconv.Atoi(majorMinor[1])
+
+	if err != nil {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	return majorValue, minorValue, nil
+}
+
+const SUPPORTED_HTTPVERSION_MAJOR = 1
+const SUPPORTED_HTTPVERSION_MINOR = 1
+
+func (req *Request) ParseHeader(rawHeader string) error {
 	lines := strings.Split(rawHeader, "\r\n")
 
-	for i := 0; i < len(lines); i++ {
-		if strings.HasSuffix(strings.ToLower(lines[i]), "http/1.1") {
-			words := strings.Split(lines[i], " ")
+	// First line is method and version
+	words := strings.Split(lines[0], " ")
+	req.method = strings.ToLower(words[0])
+	req.requestUri = words[1]
 
-			req.method = strings.ToLower(words[0])
-			req.requestUri = words[1]
+	major, minor, err := parseHttpVersion(words[2])
+
+	if err != nil {
+		// TODO: 400 bad request
+		fmt.Printf("[%s] Bad request: %s", req.originator.String(), err.Error())
+		return err
+	}
+
+	req.httpVersionMajor = major
+	req.httpVersionMinor = minor
+
+	// Not sure in what way they are backwards compatible, so only support HTTP/1.0 and HTTP/1.1
+	if SUPPORTED_HTTPVERSION_MAJOR != req.httpVersionMajor && req.httpVersionMinor <= SUPPORTED_HTTPVERSION_MINOR {
+		// TODO: 505 Http version not supported
+		return errors.New("http version not supported")
+	}
+
+	for i := 0; i < len(lines); i++ {
+		keyValuePair := strings.SplitN(lines[i], ":", 2)
+
+		// Not a field
+		if len(keyValuePair) == 1 {
 			continue
 		}
 
-		keyValuePair := strings.SplitN(lines[i], ":", 2)
-
-		switch strings.ToLower(keyValuePair[0]) {
-		case "user-agent":
-			req.userAgent = keyValuePair[1]
-		case "host":
-			req.host = keyValuePair[1]
-		case "content-length":
-			i, err := strconv.Atoi(strings.TrimSpace(keyValuePair[i]))
-
-			if err != nil {
-				return *req, errors.New("invalid request header, 'Content-Length' value not integer")
-			}
-
-			req.contentLength = i
-		}
+		req.fields[strings.ToLower(keyValuePair[0])] = strings.TrimLeft(keyValuePair[1], " ")
 	}
 
-	return *req, nil
+	return nil
 }
 
 type Response struct {
