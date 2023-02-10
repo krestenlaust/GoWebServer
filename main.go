@@ -65,7 +65,7 @@ func handleConnection(conn net.Conn) {
 
 			dataTransferStartTime = time.Now()
 
-			dataBuffer := make([]byte, 512)
+			dataBuffer := make([]byte, 256)
 			conn.SetDeadline(initiatedTime.Add(time.Millisecond * time.Duration(REQUEST_TOTAL_TIMEOUT)))
 			i, err := conn.Read(dataBuffer)
 
@@ -83,21 +83,26 @@ func handleConnection(conn net.Conn) {
 				continue
 			}
 
-			// Check for terminator
-			TERMINATOR_CONSTANT := [4]byte{13, 10, 13, 10}
-
-			correct := true
-			for offset := 0; offset < 4; offset++ {
-				if TERMINATOR_CONSTANT[offset] != dataBuffer[i-4+offset] {
-					correct = false
-					break
-
-				}
-			}
-
-			if correct {
+			if strings.HasSuffix(requestString, "\r\n\r\n") {
 				break
 			}
+
+			/*
+				// Check for terminator
+				TERMINATOR_CONSTANT := [4]byte{13, 10, 13, 10}
+
+				correct := true
+				for offset := 0; offset < 4; offset++ {
+					if TERMINATOR_CONSTANT[offset] != dataBuffer[i-4+offset] {
+						correct = false
+						break
+
+					}
+				}
+
+				if correct {
+					break
+				}*/
 		}
 
 		// Generate request
@@ -128,8 +133,6 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-// TODO: should receive the network connection instead of a parsed request,
-// this is because the main blocking action would be the parsing and retrieving.
 func handleRequest(req Request) (Response, error) {
 	res := new(Response)
 
@@ -139,7 +142,7 @@ func handleRequest(req Request) (Response, error) {
 		res.statusResponse = "I'm a teapot"
 		res.date = time.Now()
 		res.connectionStatus = req.connectionStatus
-		res.contentType = "text/html"
+		res.contentType = "text/html; charset=utf-8"
 		res.content = "<span>Denne hjemmeside kører på hjemmelavet serversoftware</span>"
 		res.contentLength = len(res.content)
 
