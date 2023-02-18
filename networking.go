@@ -42,7 +42,7 @@ func handleConnection(conn net.Conn, handler RequestHandler) {
 	for {
 		// TODO: can't remember what to do with channels
 
-		req := <-ch
+		req := <-ch // breakpoint
 		res := handler.MakeResponse(req)
 
 		conn.Write([]byte(res.String()))

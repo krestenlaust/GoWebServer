@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -30,6 +31,14 @@ type Response struct {
 	content        string
 }
 
+func NewResponse() Response {
+	res := new(Response)
+
+	res.fields = make(map[string]string)
+
+	return *res
+}
+
 func (res *Response) SetContentText(text string) {
 	res.fields["content-type"] = "text/html; charset=utf-8"
 	res.content = text
@@ -51,67 +60,31 @@ func (res Response) String() string {
 func readRequests(conn net.Conn, ch chan Request) {
 	defer close(ch)
 
-	fmt.Printf("[%s] Request received\n", conn.RemoteAddr().String())
-
 	initiatedTime := time.Now()
 
 	// Handle requests from client until closed
 	for {
-		dataTransferStartTime := time.Now()
-		requestString := ""
+		fmt.Printf("[%s] Request received\n", conn.RemoteAddr().String())
 
-		// Receive request
-		for {
-			if (time.Since(initiatedTime).Milliseconds() > REQUEST_TOTAL_TIMEOUT) || (time.Since(dataTransferStartTime).Milliseconds() > REQUEST_TRANSFER_TIMEOUT) {
-				fmt.Printf("[%s] Client timed out\n", conn.RemoteAddr().String())
-				return
-			}
+		//dataTransferStartTime := time.Now()
 
-			dataTransferStartTime = time.Now()
+		// TODO: proper timeout, taking both timeouts into account. Choose the one with the shortest timeout
+		conn.SetDeadline(initiatedTime.Add(time.Millisecond * time.Duration(REQUEST_TOTAL_TIMEOUT)))
+		req, err := NewRequestByConn(conn)
 
-			dataBuffer := make([]byte, REQUEST_BUFFERSIZE)
+		netErr, ok := err.(net.Error)
 
-			// set deadline as the timeout duration, to prevent client stalling
-			conn.SetDeadline(initiatedTime.Add(time.Millisecond * time.Duration(REQUEST_TOTAL_TIMEOUT)))
-			i, err := conn.Read(dataBuffer)
-
-			if err != nil {
-				fmt.Printf("[%s] Error occured: %s\n", conn.RemoteAddr().String(), err.Error())
-				//return
-			}
-
-			requestString += string(dataBuffer[:i])
-
-			fmt.Printf("Read %d bytes \n", i)
-
-			// More data to read?
-			if i == len(dataBuffer) {
+		if err != nil {
+			if ok {
+				if netErr.Timeout() {
+					// TODO: Request timed out. Close stream
+					return
+				}
+			} else {
+				// TODO: 400 bad request
+				fmt.Printf("[%s] Couldn't read or parse request: %s\n", conn.RemoteAddr().String(), err.Error())
 				continue
 			}
-
-			if strings.HasSuffix(requestString, "\r\n\r\n") {
-				break
-			}
-		}
-
-		req, err := NewRequest(requestString, conn.RemoteAddr())
-
-		if err != nil {
-			// 400 bad request
-			fmt.Printf("[%s] Couldn't parse request: %s\n", conn.RemoteAddr().String(), err.Error())
-			continue
-		}
-
-		contentLength, err := strconv.Atoi(req.fields["content-length"])
-
-		if err != nil {
-			// 400 bad request, invalid content-length value
-			continue
-		}
-
-		if contentLength > 0 {
-			req.body = make([]byte, contentLength)
-			conn.Read(req.body)
 		}
 
 		ch <- req
@@ -119,6 +92,8 @@ func readRequests(conn net.Conn, ch chan Request) {
 		if req.connectionStatus == "close" {
 			return
 		}
+
+		// TODO: wait for more data
 	}
 }
 
@@ -139,7 +114,7 @@ type Request struct {
 func NewRequest(raw string, origin net.Addr) (Request, error) {
 	req := new(Request)
 	req.fields = make(map[string]string)
-	err := req.ParseHeader(raw)
+	err := req.parseHeader(raw)
 
 	req.connectionStatus = "close" // closes by default
 	req.originator = origin
@@ -147,7 +122,107 @@ func NewRequest(raw string, origin net.Addr) (Request, error) {
 	return *req, err
 }
 
-func (req *Request) ParseHeader(rawHeader string) error {
+func NewRequestByConn(conn net.Conn) (Request, error) {
+	req := new(Request)
+	req.fields = make(map[string]string)
+
+	req.connectionStatus = "close" // closes by default
+	req.originator = conn.RemoteAddr()
+
+	reader := bufio.NewReader(conn)
+	err := req.parseHeaderByReader(*reader)
+
+	return *req, err
+}
+
+func (req *Request) parseHeaderByReader(reader bufio.Reader) error {
+	firstLine := true
+
+	// Read header fields
+	for {
+		lineWithCarriageReturn, err := reader.ReadString('\n')
+
+		if err != nil {
+			return err
+		}
+
+		line := strings.TrimSuffix(lineWithCarriageReturn, "\r\n")
+
+		if line == "" {
+			// End of header
+			break
+		}
+
+		if firstLine {
+			firstLine = false
+
+			// First line is method and version
+			words := strings.Split(line, " ")
+			req.method = strings.ToLower(words[0])
+			req.requestUri = words[1]
+
+			major, minor, err := parseHttpVersion(words[2])
+
+			if err != nil {
+				// TODO: 400 bad request
+				fmt.Printf("[?] Bad request: %s", err.Error())
+				return err
+			}
+
+			req.httpVersionMajor = major
+			req.httpVersionMinor = minor
+
+			// Not sure in what way they are backwards compatible, so only support HTTP/1.0 and HTTP/1.1
+			if SUPPORTED_HTTPVERSION_MAJOR != req.httpVersionMajor && req.httpVersionMinor <= SUPPORTED_HTTPVERSION_MINOR {
+				// TODO: 505 Http version not supported
+				return errors.New("http version not supported")
+			}
+
+			continue
+		}
+
+		keyValuePair := strings.SplitN(line, ":", 2)
+
+		// Not a field
+		if len(keyValuePair) == 1 {
+			// TODO: 400 bad request
+			fmt.Printf("[%s] Bad request: %s", req.originator.String(), err.Error())
+			return errors.New("bad request")
+		}
+
+		req.fields[strings.ToLower(keyValuePair[0])] = strings.TrimLeft(keyValuePair[1], " ")
+	}
+
+	contentLengthStr, ok := req.fields["content-length"]
+
+	// Request has body
+	if ok {
+		contentLength, err := strconv.Atoi(contentLengthStr)
+
+		if err != nil {
+			// TODO: 400 bad request, invalid content-length value
+			return nil
+		}
+
+		req.body = make([]byte, contentLength)
+		_, err = reader.Read(req.body)
+
+		netErr, ok := err.(net.Error)
+
+		if ok {
+			if netErr.Timeout() {
+				// TODO: timeout
+				fmt.Print("Timeout")
+			}
+		} else {
+			panic(err)
+		}
+	}
+
+	return nil
+}
+
+func (req *Request) parseHeader(rawHeader string) error {
 	lines := strings.Split(rawHeader, "\r\n")
 
 	// First line is method and version
@@ -155,7 +230,7 @@ func (req *Request) ParseHeader(rawHeader string) error {
 	req.method = strings.ToLower(words[0])
 	req.requestUri = words[1]
 
-	major, minor, err := ParseHttpVersion(words[2])
+	major, minor, err := parseHttpVersion(words[2])
 
 	if err != nil {
 		// TODO: 400 bad request
@@ -184,4 +259,34 @@ func (req *Request) ParseHeader(rawHeader string) error {
 	}
 
 	return nil
+}
+
+// Parses version string, e.g. "http/1.1", "HTTP/2" or similar
+func parseHttpVersion(versionString string) (major int, minor int, err error) {
+	parts := strings.Split(strings.ToLower(versionString), "/")
+
+	if len(parts) != 2 || parts[0] != "http" {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	majorMinor := strings.Split(parts[1], ".")
+
+	majorValue, err := strconv.Atoi(majorMinor[0])
+
+	if err != nil {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	// Only major
+	if len(majorMinor) == 1 {
+		return majorValue, 0, nil
+	}
+
+	minorValue, err := strconv.Atoi(majorMinor[1])
+
+	if err != nil {
+		return 0, 0, errors.New("invalid version format")
+	}
+
+	return majorValue, minorValue, nil
 }
