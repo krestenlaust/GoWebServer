@@ -28,7 +28,7 @@ type Response struct {
 	date           time.Time
 	statusCode     int
 	statusResponse string
-	content        string
+	content        []byte
 }
 
 func NewResponse() Response {
@@ -41,7 +41,7 @@ func NewResponse() Response {
 
 func (res *Response) SetContentText(text string) {
 	res.fields["content-type"] = "text/html; charset=utf-8"
-	res.content = text
+	res.content = []byte(text)
 }
 
 func (res Response) String() string {
@@ -54,7 +54,7 @@ func (res Response) String() string {
 		resStr += fmt.Sprintf("%s: %s\r\n", PascalifyShishkebabCase(key), element)
 	}
 
-	return resStr + "\r\n" + res.content
+	return resStr + "\r\n" + string(res.content)
 }
 
 func readRequests(conn net.Conn, ch chan Request) {
