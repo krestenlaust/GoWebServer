@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -42,6 +41,10 @@ func (FileHandler) MakeResponse(req Request) Response {
 	case "get":
 		targetFile := strings.TrimLeft(req.requestUri, "/")
 
+		if targetFile == "" {
+			targetFile = "index.html"
+		}
+
 		if !fs.ValidPath(targetFile) {
 			res.statusCode = 400
 			res.statusResponse = "Bad Request"
@@ -57,12 +60,18 @@ func (FileHandler) MakeResponse(req Request) Response {
 			res.SetContentText("<span>404 - Jeg kan ikke finde den fil du leder efter. - Hr. Server</span>")
 			return res
 		} else if err != nil {
-			res.statusCode = 500
-			res.statusResponse = "Internal Server Error"
-			res.SetContentText("<span>500 - Det var ikke så godt. - Hr. Server</span>")
 
-			fmt.Println(err)
-			return res
+			//res.statusCode = 500
+			//res.statusResponse = "Internal Server Error"
+			//res.SetContentText("<span>500 - Det var ikke så godt. - Hr. Server</span>")
+
+			//fmt.Println(err)
+
+			// Can't return response in this part of the program even though
+			// it would make sense to do se.
+			// Producing abnormal error is first priority. In this program.
+			panic(err)
+			//return res
 		}
 
 		fileStat, err := file.Stat()
@@ -95,6 +104,10 @@ func (FileHandler) MakeResponse(req Request) Response {
 			newSlice := buffer[:i]
 
 			fileData = append(fileData, newSlice...)
+		}
+
+		if strings.HasSuffix(targetFile, ".html") {
+			res.fields["content-type"] = "text/html; charset=utf-8"
 		}
 
 		res.statusCode = 200
