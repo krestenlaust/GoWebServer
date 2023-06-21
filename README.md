@@ -1,10 +1,26 @@
 # GoWebServer
 This is an HTTP* server, which does basic serving of webpages and has a couple default error codes.
 
-* [#1](https://github.com/krestenlaust/GoWebServer/issues/1) SSL support
+(*[#1](https://github.com/krestenlaust/GoWebServer/issues/1) SSL support)
 
 ## How to use it?
-This will be expanded later ([#2](https://github.com/krestenlaust/GoWebServer/issues/2))
+Following is a short description of how to get the server running as a user.
+
+### Normal executable
+
+1. Get recent release / compile a folder
+2. Place executable in your WWW-folder
+3. Run executable
+
+The default handler is [file-handler](https://github.com/krestenlaust/GoWebServer/blob/67e3063ce05c471fd61a069358499c0679aadcb5/request_handers.go#L35) (currently, handler is defined at compile-time)
+- It searches it's own directory for a file by URL-path
+- If the URL doesn't contain path, it searches for the file "index.html"
+- It does Not support displaying folders
+
+### Docker
+
+1. Place WWW-files inside source directory (as of writing, it's the root directory)
+2. Compile docker image
 
 ## Project structure
 This is one of my first projects written in Go, hence I'm not used to the way that files don't simply contain a single class-level type, but instead are grouped by topic with multiple top-level types inside. Following is a short description of the most relevant files.
