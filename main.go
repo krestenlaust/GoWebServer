@@ -5,7 +5,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Hello, world")
-
+	fmt.Println("Server starting...")
+	
 	ListenHttp("0.0.0.0", 80, new(FileHandler))
 }

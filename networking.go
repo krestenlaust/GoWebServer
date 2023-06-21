@@ -40,7 +40,7 @@ func handleConnection(conn net.Conn, handler RequestHandler) {
 	go readRequests(conn, ch)
 
 	for {
-		// TODO: can't remember what to do with channels
+		// TODO: can't remember what to do with channels.
 
 		req := <-ch // breakpoint
 		res := handler.MakeResponse(req)

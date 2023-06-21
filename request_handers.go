@@ -64,14 +64,11 @@ func (FileHandler) MakeResponse(req Request) Response {
 			//res.statusCode = 500
 			//res.statusResponse = "Internal Server Error"
 			//res.SetContentText("<span>500 - Det var ikke så godt. - Hr. Server</span>")
-
 			//fmt.Println(err)
-
-			// Can't return response in this part of the program even though
-			// it would make sense to do se.
-			// Producing abnormal error is first priority. In this program.
-			panic(err)
 			//return res
+
+			// All errors should be handled separately.
+			panic(err)
 		}
 
 		fileStat, err := file.Stat()
